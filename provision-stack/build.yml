@@ -1,0 +1,37 @@
+---
+- name: Generating artifact, copy artifact & sql file to files directory
+  hosts: localhost
+  connection: local
+  become: yes
+  tasks:
+          - name: Installing the required dependencies
+            service:
+                    name: "{{item}}"
+                    state: present
+                    update_cache: yes
+            loop:
+                    - git
+                    - openjdk-8-jdk
+                    - maven
+          - name: Pulling the source code from the Git repository
+            git:
+                    repo: 'https://github.com/devopshydclub/vprofile-project.git'
+                    version: vp-rem
+                    dest: ./Vprofile-repo
+            register: gitout
+          - name: Running the maven install command
+            command: "mvn install"
+            when: gitout.changed == True
+            args:
+                    chdir: Vprofile-repo
+            register: mvnout
+          - name: Copying the artifact from the command run
+            copy:
+                    src: "{{item}}"
+                    dest: files/ROOT.war
+            with_fileglob: Vprofile-repo/target/*.war
+            when: mvnout.changed == True
+          - name: Copying the SQL file to files directory
+            copy:
+                    src: Vprofile-repo/src/main/resources/db_backup.sql
+                    dest: files/db_backup.sql

@@ -1,0 +1,16 @@
+- hosts: localhost
+  gather_facts: no
+  tasks:
+  -   name: generating sample key
+      amazon.aws.ec2_key:
+                  name: samplekey
+                  region: us-east-2
+      register: ec2samplekey
+  -   name: printing the sample key
+      debug:
+              var: ec2samplekey
+  -   name: Copying to file
+      when: ec2samplekey.changed == true
+      copy:
+              dest: /root/temp.pem
+              content: "{{ec2samplekey.key.private_key}}"

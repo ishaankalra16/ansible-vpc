@@ -1,0 +1,207 @@
+---
+- name: Setup Vprofile stack
+  gather_facts: no
+  connection: local
+  hosts: localhost
+  tasks:
+  - name: Importing VPC Setup output variables file
+    include_vars: vars/output_vars.txt
+  - name: Importing Stack Setup variables file
+    include_vars: vars/stack_setup.txt
+  - name: Generating Key for the setup
+    ec2_key:
+            name: vprofilestack-key
+            region: "{{region}}"
+    register: vprofilestackkeyout
+  - name: Copying the private key to the file
+    when: vprofilestackkeyout.changed
+    copy:
+            content: "{{vprofilestackkeyout.key.private_key}}"
+            dest: ./vprofilestack-key.pem
+            mode: 0600
+  - name: Creating the Security Group for the Load Balancer
+    amazon.aws.ec2_group:
+     name: VprofileELBSG
+     description: Security Group for the Load Balancer
+     vpc_id: "{{vpcid}}"
+     region: "{{region}}"
+     rules:
+     - proto: tcp
+       from_port: 80
+       to_port: 80
+       cidr_ip: 0.0.0.0/0
+       rule_desc: Allow traffic from anywhere to port 80
+    register: VprofileELBSGout
+  - name: Creating the Security Group for the EC2 Instances in the private subnet
+    amazon.aws.ec2_group:
+     name: VprofileStacksg
+     description: Security Group for the Load Balancer
+     vpc_id: "{{vpcid}}"
+     region: "{{region}}"
+     purge_rules: no
+     rules:
+     - proto: tcp
+       from_port: 80
+       to_port: 80
+       group_id: "{{VprofileELBSGout.group_id}}"
+       rule_desc: Allow traffic from anywhere to port 80
+     - proto: tcp
+       from_port: 22
+       to_port: 22
+       group_id: "{{BastionSGid}}"
+       rule_desc: Allow SSH from Bastion Instances
+    register: VprofileStacksgout
+  - name: Creating the Security Group for the EC2 Instances in the private subnet
+    amazon.aws.ec2_group:
+     name: VprofileStacksg
+     description: Security Group for the Load Balancer
+     vpc_id: "{{vpcid}}"
+     region: "{{region}}"
+     purge_rules: no
+     rules:
+     - proto: all
+       group_id: "{{VprofileStacksgout.group_id}}"
+       rule_desc: Allow traffic within the Security Group
+    register: VprofileStacksg
+  - name: Creating the nginx Instance
+    ec2_instance:
+     key_name: vprofilestack-key
+     instance_type: t2.micro
+     image_id: "{{nginx_ami}}"
+     vpc_subnet_id: "{{prisub1id}}"
+     region: "{{region}}"
+     security_group: "{{VprofileStacksg.group_id}}"
+     wait: yes
+     wait_timeout: 300
+     tags:
+             Name: web01
+             Project: Vprofile
+             Owner: Devops Team
+    register: web01out
+  - debug: 
+       var: web01out.instances[0].network_interfaces[0].private_ip_address
+  - name: Creating the tomcat Instance
+    ec2_instance:
+     key_name: vprofilestack-key
+     instance_type: t2.micro
+     image_id: "{{tomcat_ami}}"
+     vpc_subnet_id: "{{prisub1id}}"
+     region: "{{region}}"
+     security_group: "{{VprofileStacksg.group_id}}"
+     wait: yes
+     wait_timeout: 300
+     tags:
+       Name: app01
+       Project: Vprofile
+       Owner: Devops Team
+    register: app01out
+  - name: Creating the memcache Instance
+    ec2_instance:
+     key_name: vprofilestack-key
+     instance_type: t2.micro
+     image_id: "{{memcache_ami}}"
+     vpc_subnet_id: "{{prisub1id}}"
+     region: "{{region}}"
+     security_group: "{{VprofileStacksg.group_id}}"
+     wait: yes
+     wait_timeout: 300
+     tags:
+      Name: mc01
+      Project: Vprofile
+      Owner: Devops Team
+    register: mc01out
+  - name: Creating the RabbitMQ Instance
+    ec2_instance:
+      key_name: vprofilestack-key
+      instance_type: t2.micro
+      image_id: "{{rmq_ami}}"
+      vpc_subnet_id: "{{prisub1id}}"
+      region: "{{region}}"
+      security_group: "{{VprofileStacksg.group_id}}"
+      wait: yes
+      wait_timeout: 300
+      tags:
+       Name: rmq01
+       Project: Vprofile
+       Owner: Devops Team
+    register: rmq01out
+  - name: Creating the MySQL Instance
+    ec2_instance:
+     key_name: vprofilestack-key
+     instance_type: t2.micro
+     image_id: "{{mysql_ami}}"
+     vpc_subnet_id: "{{prisub1id}}"
+     region: "{{region}}"
+     security_group: "{{VprofileStacksg.group_id}}"
+     wait: yes
+     wait_timeout: 300
+     tags:
+      Name: db01
+      Project: Vprofile
+      Owner: Devops Team
+    register: db01out
+  - name: Creating the Elastic Load Balancer
+    elb_classic_lb:
+      name: "vprofileelb"
+      region: "{{region}}"
+      state: "{{state}}"
+      listeners:
+      - protocol: http
+        load_balancer_port: 80
+        instance_port: 80
+      subnets:
+      - "{{pubsub1id}}"
+      - "{{pubsub2id}}"
+      - "{{pubsub3id}}"
+      instance_ids:
+      - "{{web01out.instances[0].instance_id}}"
+  - name: Inserting HOST IP in provision-stack/group_vars/hostsip.txt
+    blockinfile:
+            path: provision-stack/group_vars/hostsip.txt
+            block: |
+              web01_ip: {{web01out.instances[0].instance_id }}
+              app01_ip: {{app01out.instances[0].instance_id }}
+              rmq01_ip: {{rmq01out.instances[0].instance_id }}
+              mc01_ip: {{mc01out.instances[0].instance_id }}
+              db01_ip: {{db01out.instances[0].instance_id }}
+  - name: Copying the private key to provision-stack directory
+    copy:
+            src: vprofilestack-key.pem
+            dest: provision-stack/vprofilestack-key.pem
+            mode: 0400
+  - name: Making the inventory file in provision-stack directory
+    blockinfile:
+            path: provision-stack/inventory
+            block: |
+              web01 ansible_host={{web01out.instances[0].network_interfaces[0].private_ip_address}}
+              app01 ansible_host={{app01out.instances[0].network_interfaces[0].private_ip_address}}
+              rmq01 ansible_host={{rmq01out.instances[0].network_interfaces[0].private_ip_address}}
+              mc01 ansible_host={{mc01out.instances[0].network_interfaces[0].private_ip_address}}
+              db01 ansible_host={{db01out.instances[0].network_interfaces[0].private_ip_address}}
+              cntl ansible_host=127.0.0.1 ansible_connection=local
+
+              [websrvgrp]
+              web01
+
+              [appsrvgrp]
+              app01
+
+              [mcsrvgrp]
+              mc01
+
+              [dbsrvgrp]
+              db01
+
+              [rmqsrvgrp]
+              rmq01
+
+              [stack_inst:children]
+              websrvgrp
+              appsrvgrp
+              rmqsrvgrp
+              mcsrvgrp
+              dbsrvgrp
+
+              [stack_inst:vars]
+              ansible_user=ubuntu
+              ansible_ssh_private_key_file=vprofilestack-key.pem
